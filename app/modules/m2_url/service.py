@@ -3,10 +3,14 @@
 同一条 key 可能来自多行原始条目（大小写、跟踪参数、相对路径不同），
 这里把「原始写法」全部保留成 raw_forms，供缺陷单做证据；
 越界与非法地址不进 key，进隔离区。
+
+地址规则按站点生效：调用方传入 {站点: 档案}，没传就按各站点当前生效的档案
+（库里的 site_rules）。每条记录同时保留 ``legacy_key``——按旧口径算出的旧键，
+历史批次复算与跨版本比较靠它对应。
 """
 from __future__ import annotations
 
-from ... import reasons
+from ... import config, reasons
 from . import contract, normalize, scope
 
 
@@ -23,23 +27,36 @@ def _quarantine(rows: list[dict], site: str, source: str, row_no: int,
                  "label": reasons.label(reason)})
 
 
-def _key_slot(keys: dict, url: str, site: str) -> dict:
+def _key_slot(keys: dict, url: str, site: str, profile: str,
+              legacy_key: str) -> dict:
     slot = keys.get(url)
     if slot is None:
-        slot = {"key": url, "url": url, "site": site, "catalog": [], "sitemap": [],
+        slot = {"key": url, "url": url, "site": site, "profile": profile,
+                "legacy_key": legacy_key, "catalog": [], "sitemap": [],
                 "raw_forms": [], "notes": []}
         keys[url] = slot
     return slot
 
 
-def prepare(catalog_rows: list[dict], sitemap_rows: list[dict]) -> dict:
+def resolve_profiles(profiles: dict[str, str] | None) -> dict[str, str]:
+    """调用方没指定时走库里的按站档案；这里只做兜底，读库在 m5_batches。"""
+    base = dict(config.SITE_PROFILE_DEFAULTS)
+    if profiles:
+        base.update({k: v for k, v in profiles.items() if k in config.SITE_BY_CODE})
+    return base
+
+
+def prepare(catalog_rows: list[dict], sitemap_rows: list[dict],
+            profiles: dict[str, str] | None = None) -> dict:
+    site_profiles = resolve_profiles(profiles)
     keys: dict[str, dict] = {}
     quarantine: list[dict] = []
     notes: list[dict] = []
 
     for row in catalog_rows:
         site = row["site"]
-        norm = normalize.safe_normalize(row["raw_href"], row["page_url"])
+        profile = site_profiles.get(site) or config.DEFAULT_PROFILE
+        norm = normalize.safe_normalize(row["raw_href"], row["page_url"], profile)
         if norm is None:
             _quarantine(quarantine, site, "catalog", row["line_no"], "BAD_URL",
                         row["raw_href"])
@@ -49,8 +66,10 @@ def prepare(catalog_rows: list[dict], sitemap_rows: list[dict]) -> dict:
                         row["raw_href"])
             continue
         fields, attr_scheme = contract.map_attrs(row.get("attrs") or {})
-        slot = _key_slot(keys, norm.url, scope.site_of(norm.url) or site)
+        slot = _key_slot(keys, norm.url, scope.site_of(norm.url) or site, profile,
+                         norm.legacy_key)
         entry = {"site": site, "key": norm.url, "url": norm.url,
+                 "legacy_key": norm.legacy_key, "profile": profile,
                  "page_url": row["page_url"], "page_no": row.get("page_no", 1),
                  "line_no": row["line_no"], "raw_href": row["raw_href"],
                  "raw_text": row.get("raw_text", ""),
@@ -68,7 +87,8 @@ def prepare(catalog_rows: list[dict], sitemap_rows: list[dict]) -> dict:
 
     for row in sitemap_rows:
         site = row["site"]
-        norm = normalize.safe_normalize(row["raw_loc"], row["source_url"])
+        profile = site_profiles.get(site) or config.DEFAULT_PROFILE
+        norm = normalize.safe_normalize(row["raw_loc"], row["source_url"], profile)
         if norm is None:
             _quarantine(quarantine, site, "sitemap", row["row_no"], "BAD_URL",
                         row["raw_loc"])
@@ -79,8 +99,10 @@ def prepare(catalog_rows: list[dict], sitemap_rows: list[dict]) -> dict:
             continue
         if row.get("relative"):
             _note(notes, site, "LOC_RELATIVE", f"行 {row['row_no']} {row['raw_loc'][:60]}")
-        slot = _key_slot(keys, norm.url, scope.site_of(norm.url) or site)
+        slot = _key_slot(keys, norm.url, scope.site_of(norm.url) or site, profile,
+                         norm.legacy_key)
         slot["sitemap"].append({"site": site, "key": norm.url, "url": norm.url,
+                                "legacy_key": norm.legacy_key, "profile": profile,
                                 "row_no": row["row_no"], "raw_loc": row["raw_loc"],
                                 "lastmod": row.get("raw_lastmod", ""),
                                 "changed": norm.changed, "notes": list(norm.notes)})
@@ -93,4 +115,5 @@ def prepare(catalog_rows: list[dict], sitemap_rows: list[dict]) -> dict:
     entries = [entry for slot in ordered for entry in slot["catalog"]]
     entries.sort(key=lambda row: (row["site"], row["page_no"], row["line_no"]))
     return {"keys": ordered, "entries": entries, "quarantine": quarantine,
-            "notes": notes, "key_count": len(ordered)}
+            "notes": notes, "key_count": len(ordered),
+            "profiles": site_profiles}

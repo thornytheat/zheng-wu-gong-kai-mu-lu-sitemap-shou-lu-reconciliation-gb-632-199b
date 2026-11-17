@@ -24,13 +24,31 @@
 | scheme | 只接受 `http`/`https`；`javascript:`/`mailto:` 等进隔离区 | — |
 | host | 主机小写、去末尾点、去默认端口（80/443） | `case`、`default_port` |
 | relative | 相对地址按所在页面地址补全 | `relative` |
-| path | 合并重复斜杠、去尾斜杠（根路径除外）、路径整体小写 | `duplicate_slash`、`trailing_slash`、`case` |
+| path | 合并重复斜杠、去尾斜杠（根路径除外）；是否小写由站点档案决定 | `duplicate_slash`、`trailing_slash`、`case` |
 | tracking | 丢弃跟踪参数与空值会话参数（清单见 `config.TRACKING_PARAMS`） | `tracking` |
-| query | 保留参数按名称+值排序后重建 | `param_order` |
+| query | 旧档案按名称+值排序；新档案保留原始顺序（重复参数顺序有效） | `param_order`（仅旧档案） |
 | fragment | 丢弃片段 | `fragment` |
 
+### 2.1 地址规则档案（profile）
+
+同一套步骤按站点选两个开关，历史批次随 run 记下当时的档案：
+
+| 档案 | path 大小写 | query 顺序 | 用途 |
+|---|---|---|---|
+| `legacy`（默认） | 不区分（小写化） | 排序后视为同址 | 改版前口径、历史季度复算 |
+| `strict` | 区分 | 原样保留，`?a=1&a=2` 与 `?a=2&a=1` 是两个地址 | 改版后口径 |
+
+- 每个站点各有当前档案与版本号（`site_rules`）；切换记录在 `rule_switches`。
+- 任何档案的规范化结果都带 `legacy_key`：按 `legacy` 档案算出的键。
+  它是**对应依据**，不是新键的替代；新键始终保留原始大小写/参数顺序。
+- 历史批次（`runs.payload.profiles` + `keys[].legacy_key`）按当时的档案复算，
+  切换规则不会改写已入库数据。
+
+### 2.2 键与判定
+
 - **比较键** = 规范化后的完整地址（`scheme://host/path?query`）。
-- 样例站大小写不敏感（对标 IIS），所以大小写差异算「地址不规范」，不算死链。
+- 样例站物理上大小写不敏感（对标 IIS），所以 `legacy` 下大小写差异只算「地址不规范」，不算死链；
+  改版后 `strict` 站点路径大小写区分页面。
 - `relative` 与 `param_order` 是正常写法，不参与「地址不规范」判定；
   其余痕迹任一出现即判 `CANONICAL_MISMATCH`（`classify.MISMATCH_NOTES`）。
 - 越界地址（主机不在站点清单）不进 key，记 `SCOPE_OFFSITE` / `LOC_OFFSITE`。
@@ -84,27 +102,42 @@
 | 字段 | 规则 |
 |---|---|
 | `input_digest` | 对 `url\tstatus\tsha256` 排序后取 sha256 |
-| `batch_key` | `sha256(站点排序 + input_digest + 规则版本)` |
-| `run_id` | `ra-` + `batch_key` 前 12 位；同输入必然同号 |
+| `batch_key` | `sha256(站点排序 + input_digest + 规则版本 + 按站档案)` |
+| `run_id` | `ra-` + `batch_key` 前 12 位；同输入同档案必然同号 |
+| `profiles` | 本批各站生效的地址档案，入库后不再随站点切换变化 |
+| `profile_version` | 本批所用档案的最大版本号 |
 | 复用 | 同 `batch_key` 且状态 `done` 时直接返回已入库结果，不新增行 |
 | 阶段 | `crawl` / `probe` / `reconcile`，`stop_after` 可停在任一阶段 |
+| 续跑 | 沿用该批入库时的 `profiles` 复算，不读切换后的当前档案 |
 
-## 7 变更监测
-
-快照 `schema = sitemapaudit/watch/1`，一条比较键一行：
+规则切换日志（`rule_switches`）：
 
 | 字段 | 规则 |
 |---|---|
-| `key` | 比较键：小写 + 合并重复斜杠 + 去尾斜杠（`chain.canonical_input`） |
+| `switch_id` | `rs-` + 请求键前 10 位；同请求同号 |
+| `request_key` | sha256(目标站点排序 + 目标档案 + 期望版本) |
+| `status` | `applied` / `failed`；失败不改变站点档案 |
+| 幂等 | 同 `request_key` 已有 `applied` 时直接返回，不再升版本 |
+
+## 7 变更监测
+
+快照 `schema = sitemapaudit/watch/1`，一条比较键一行（v1 可读，字段只增不改）：
+
+| 字段 | 规则 |
+|---|---|
+| `key` | 本批档案下的比较键（`strict` 站点保留路径大小写） |
+| `legacy_key` | 旧口径键（小写 + 参数排序），跨版本配对的依据 |
+| `profile` | 该行所属站点的地址档案 |
 | `status` | 探测末态，`0` 表示传输层失败 |
 | `hop_count` | 跳转次数；`0` 表示未跳转 |
 | `chain.kind` | `direct` / `chain` / `cycle` / `limit` |
 | `raws` | 原始写法 + 补全基准（`base_kind` = `page` / `sitemap`） |
 | `rows` | 同一比较键出现多行时保留较差的一条 |
+| `profiles`（快照级） | 各站档案；v1 快照缺失时按 `legacy` 推断 |
 
 三态：`status` 为 0 或 ≥400 记 `dead`；否则 `hop_count` > 0 记 `redirect`，其余 `ok`。
 
-分桶（上次 × 本次，9 格固定表，另加三种独立桶）：
+分桶（上次 × 本次，9 格固定表，另加独立桶）：
 
 | 上次 | 本次 | 分桶 | 级别 |
 |---|---|---|---|
@@ -120,6 +153,24 @@
 | — | 有 | `added` 新增地址 | 提示 |
 | 有 | — | `removed` 消失地址 | 提示 |
 | 两侧键不同、写法相同 | — | `basis` 基准不同 | 警告 |
+| 档案切换、一拆多 | — | `resplit` 规则拆键 | 提示 |
+| 档案切换、多合一 | — | `remerged` 规则并键 | 提示 |
+| 无法唯一对应 | — | `unverified` 待核实 | 警告 |
 
-回归清单 = `new_dead` + `new_redirect` + `still_dead` + `improved` + `basis`。
-`added` / `removed` 不计入回归；`basis` 需人工确认补全基准后再决定归属。
+### 7.1 跨版本配对依据（`match`）
+
+| `match` | 条件 | 是否计入修复/新增 |
+|---|---|---|
+| `exact` | 两次比较键相同 | 是 |
+| `legacy` | 键不同，但旧口径键相同且两侧各仅一条 | 是 |
+| `raw` | 仍不同，同一原始写法在两侧各仅出现一次 | 是 |
+| `resplit` | 旧口径一条、新口径多条，且能认出唯一延续 | 否，单列 |
+| `remerged` | 旧口径多条、新口径一条，同上 | 否，单列 |
+| `ambiguous` | 多对多，或拆/并组内认不出唯一延续 | 否，列待核实 |
+
+- 只有 `exact`/`legacy`/`raw` 才能进入 `recovered`/`new_dead` 等归属。
+- 档案切换时，另一侧完全没有对应键的行记 `unverified`，不再伪装成 `removed`/`added`。
+- 回归清单 = `new_dead` + `new_redirect` + `still_dead` + `improved` + `basis` + `unverified`；
+  `added` / `removed` / `resplit` / `remerged` 不进回归。
+- 页面与 `/api/watch/regressions.csv` 调同一个 `service.watch`，口径一致；
+  页面单表有展示上限，导出不受上限影响。

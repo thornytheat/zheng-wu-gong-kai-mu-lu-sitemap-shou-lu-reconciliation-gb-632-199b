@@ -13,6 +13,11 @@
   <button id="resume-btn" type="button" {% if not run %}disabled{% endif %}>续跑</button>
   <span id="run-status" class="tag">就绪</span>
   <span class="flow">{{ stage_flow }}</span>
+  <span class="tag info">
+    规则：
+    {% for site_code, profile in (run.profiles or {}).items() %}{{ site_code }}={{ profile }}{% if not loop.last %}、{% endif %}{% endfor %}
+    {% if not run.profiles %}按站点默认{% endif %}
+  </span>
 </section>
 <div id="run-notice" class="notice" hidden></div>
 

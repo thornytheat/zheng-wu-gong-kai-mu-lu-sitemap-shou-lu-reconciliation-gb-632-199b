@@ -1,7 +1,7 @@
 # 深度登记 sitemapaudit
 
-- 规模：中型（文件 81，Python 48，7 个功能模块，测试函数 85，用例 87）
-- 核心规则：canonical 规范化 7 步 → 逐跳探测 → 三向分类（7 类 + 对平），四账守恒；两次巡检按同一把比较键做变更分桶
+- 规模：中型（文件 94，Python 51，7 个功能模块，测试函数 127，用例 129）
+- 核心规则：canonical 规范化 7 步（按站地址档案）→ 逐跳探测 → 三向分类（7 类 + 对平），四账守恒；两次巡检按旧键 + 原始写法对应后做变更分桶
 - 使用者与工作流：政务公开办网站编辑，季度巡检 3 站 2.4 万条目录；样例站 → 采信 → 规范化 → 可达性 → 三向对账 → 缺陷单导出 → 与上季度对比出回归清单
 
 ## 功能模块
@@ -9,7 +9,7 @@
 | 模块 | 使用者动作 | 入口 | 核心文件 | 测试 |
 |---|---|---|---|---|
 | M1 目录采信 | 触发巡检，看目录页与隔离行 | POST /api/crawl | `app/modules/m1_catalog/service.py` `app/modules/m1_catalog/decode.py` `app/modules/m1_catalog/extract.py` `app/modules/m1_catalog/fetch.py` | `tests/test_catalog.py` |
-| M2 URL 规则 | 查契约、试算地址规范化 | GET /api/contract | `app/modules/m2_url/normalize.py` `app/modules/m2_url/contract.py` `app/modules/m2_url/scope.py` | `tests/test_url.py` |
+| M2 URL 规则 | 查契约、按站切规则、试算地址规范化 | GET /api/contract `GET /api/rules` `POST /api/rules/switch` | `app/modules/m2_url/normalize.py` `app/modules/m2_url/rules.py` `app/modules/m2_url/contract.py` `app/modules/m2_url/scope.py` | `tests/test_url.py` `tests/test_rules.py` `tests/test_rule_switch.py` |
 | M3 可达性 | 看逐地址状态码、跳转链与分类 | GET /api/reachability | `app/modules/m3_reach/probe.py` `app/modules/m3_reach/classify.py` | `tests/test_reach.py` |
 | M4 三向对账 | 核对四账、交叉表与分类合计 | GET /api/reconcile | `app/modules/m4_reconcile/totals.py` `app/modules/m4_reconcile/compare.py` | `tests/test_reconcile.py` |
 | M5 巡检批次 | 查历史、停在中间、续跑 | GET /api/batches | `app/modules/m5_batches/service.py` `app/modules/m5_batches/state.py` `app/modules/m5_batches/history.py` | `tests/test_batches.py` |
@@ -39,6 +39,10 @@
 | TRAP-21 | 只查 sitemap→目录 一个方向 | 漏掉「目录有、sitemap 无」那一半 | 双向核验：ONLY_IN_CATALOG 与 ONLY_IN_SITEMAP_DEAD 同时输出 | `app/modules/m4_reconcile/totals.py` | `tests/test_reconcile.py::test_both_directions_reported` |
 | TRAP-27 | 301 环与「超过上限的长链」混为一谈 | 都记跳转成环；同一环从多个入口探测各报一次，清单里同环出现多行 | 未回到已访问地址的超限链记 `CHAIN_LIMIT`；环按环内成员集合合并，多入口只报一次 | `app/modules/m7_watch/chain.py` | `tests/test_watch.py::test_trap27_cycle_grouped_once_and_long_chain_is_not_cycle` |
 | TRAP-28 | 同一相对写法分别按目录页地址与 sitemap 地址补全，得到两个键 | 算成一条新增死链加一条消失地址，回归清单出现假新增 | 两侧原始写法相同、补全基准不同的先配成 `BASIS_SHIFT`「基准不同」，不进增删 | `app/modules/m7_watch/diff.py` | `tests/test_watch.py::test_trap28_relative_base_shift_is_basis_not_add_and_remove` |
+| TRAP-29 | 站点改版后路径大小写、重复参数顺序开始区分页面，旧规则仍把两种写法合成同址 | 仍按小写+排序合成一把键，新页面永远探测不到；或直接改全局规则，历史季度全部重算 | 按站地址档案（`legacy`/`strict`），站点各自生效；批次把档案入库，历史按原档案复算 | `app/modules/m2_url/normalize.py` `app/modules/m2_url/rules.py` | `tests/test_rules.py::test_strict_profile_keeps_path_case_and_param_order` |
+| TRAP-30 | 切了新规则后，旧口径合并的一条地址在新口径拆成多条 | 把多出来的键当成「新增」，把原有键当成「已修复」，季度变化全错 | 经 `legacy_key` 分组：锚点继续对比，其余记「规则拆键」，不冒充新增/修复 | `app/modules/m7_watch/diff.py` | `tests/test_watch.py::test_split_keys_are_not_added_or_recovered` |
+| TRAP-31 | 拆键/并键后一条旧地址对多条新地址，无法唯一对应 | 随便挑一条记为「已修复」，另一条记为「新增」 | 认不出唯一延续时整组列「待核实」，不计修复/新增，导出带对应依据 | `app/modules/m7_watch/diff.py` | `tests/test_watch.py::test_ambiguous_split_is_unverified_not_recovered` |
+| TRAP-32 | 规则切换写库中途失败，或用户重试同一请求 | 一半站点切了、一半没切；重试又升一次版本，切换日志重复 | 先校验后落库，写入后核对，失败显式回滚；同请求命中已有成功记录直接返回 | `app/modules/m2_url/rules.py` | `tests/test_rule_switch.py::test_write_failure_rolls_back_to_previous_profile` `tests/test_rule_switch.py::test_retry_same_request_does_not_reapply` |
 
 补充的不变量与端到端：
 
@@ -62,12 +66,24 @@
 
 ## 变更对比规则
 
-- 比较键 = `chain.canonical_input`：小写 + 合并重复斜杠 + 去尾斜杠，三步固定且幂等。
-- 分桶 = 上次三态 × 本次三态（9 格固定表）+ 新增 / 消失 / 基准不同。
+- 比较键按站点档案：`legacy` 保留小写 + 参数排序；`strict` 保留路径大小写与参数原始顺序。
+- 档案没变：同键逐行比较；只在「同写法不同补全基准」上记「基准不同」。
+- 档案变了：先按 `legacy_key` 找同一地址，再按原始写法唯一对应；配对依据（`match`）写进每一行。
+- 分桶 = 上次三态 × 本次三态（9 格固定表）+ 新增 / 消失 / 基准不同 / 规则拆键 / 规则并键 / 待核实。
+- 「已修复」只给 `exact` / `legacy` / `raw` 三种能唯一对应的配对；拆键、并键、多义一律不计修复。
 - 上次死链、本次能打开但要跳转，记「已改善」，与「仍未修复」分开。
-- 回归清单 = 新增死链 + 新恶化 + 仍未修复 + 已改善 + 基准不同；已修复与未变化不进。
+- 回归清单 = 新增死链 + 新恶化 + 仍未修复 + 已改善 + 基准不同 + 待核实；已修复与未变化不进。
 - 跳转环按环内成员集合合并；样例站当前没有环，判定逻辑由测试喂跳转链覆盖。
 - 基准优先级：库内更早的批次 → `sample_data/watch/baseline.json` → 提示无基准。
+- 页面与 `/api/watch/regressions.csv` 同源同口径；导出条数不受页面单表上限影响。
+
+## 规则切换规则
+
+- 档案只有 `legacy` / `strict` 两种，站点各自一份当前档案与版本号。
+- 切换先回放最近几批原始行：历史批次要按入库档案原样复现，候选档案要键幂等、无重复键。
+- 校验不过不写库；写入后核对，失败回滚到切换前的档案与版本。
+- 同请求（站点 + 档案 + 期望版本）重试返回已有结果，不重复生效；期望版本过期返回 `E_RULE_VERSION`。
+- 批次键含按站档案，换了档案即新批次；续跑沿用入库档案，不读当前档案。
 
 ## 已知不覆盖
 

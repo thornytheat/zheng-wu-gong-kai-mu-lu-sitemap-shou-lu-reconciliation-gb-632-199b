@@ -20,6 +20,7 @@ def _crawl_payload(result: dict) -> dict:
             "batch_key": run["batch_key"], "reused": result["reused"],
             "note": result["note"], "stage_state": run.get("stage_state", {}),
             "stages": run.get("stages", []), "totals": run.get("totals", {}),
+            "profiles": run.get("profiles", {}),
             "resources": len(run.get("resources", [])),
             "conflicts": len(run.get("conflicts", [])),
             "quarantine": len(run.get("quarantine", []))}
@@ -35,7 +36,8 @@ def api_crawl(payload: dict | None = None, ctx: Ctx = Depends(get_ctx)) -> dict:
                                mode=str(body.get("mode") or "full"),
                                stop_after=body.get("stop_after"),
                                resume_of=body.get("resume_of"),
-                               sites=[str(s) for s in sites] if sites else None)
+                               sites=[str(s) for s in sites] if sites else None,
+                               profile=body.get("profile"))
     return _crawl_payload(result)
 
 

@@ -43,10 +43,11 @@ def _trim(path: str) -> str:
 
 
 def canonical_input(url: str) -> str:
-    """比较两次巡检用的键：小写 + 合并重复斜杠 + 去尾斜杠。
+    """旧口径比较键：小写 + 合并重复斜杠 + 去尾斜杠。
 
     三步顺序固定，且自身幂等（第二次调用不再改变结果）。
     大小写与尾斜杠同时出现时只算一把键，不产生「新增 + 消失」两条。
+    这是历史快照（v1）与旧档案的尺子；新档案下的键用 canonical_caseful。
     """
     text = (url or "").strip()
     if not text:
@@ -59,6 +60,32 @@ def canonical_input(url: str) -> str:
     path = _trim(parts.path or "/").lower()
     query = f"?{parts.query}" if parts.query else ""
     return f"{parts.scheme.lower()}://{host}{port}{path}{query}"
+
+
+def canonical_caseful(url: str) -> str:
+    """路径区分大小写时的键：只合并重复斜杠、去尾斜杠，路径大小写原样保留。
+
+    主机与协议仍小写（DNS 与 HTTP 语义如此），参数顺序原样保留。
+    """
+    text = (url or "").strip()
+    if not text:
+        return ""
+    parts = urlsplit(text)
+    if not parts.scheme:
+        return _trim(text)
+    host = (parts.hostname or "").lower()
+    port = f":{parts.port}" if parts.port else ""
+    path = _trim(parts.path or "/")
+    query = f"?{parts.query}" if parts.query else ""
+    return f"{parts.scheme.lower()}://{host}{port}{path}{query}"
+
+
+def key_for(url: str, profile: str | None = None) -> str:
+    """按档案选比较键：strict 保留路径大小写，其余走旧口径。"""
+    entry = config.ADDRESS_PROFILES.get(profile or config.DEFAULT_PROFILE) or {}
+    if entry.get("path_case_sensitive"):
+        return canonical_caseful(url)
+    return canonical_input(url)
 
 
 def resolve(raw: str, base_url: str) -> str:
@@ -122,10 +149,15 @@ def group_cycles(rows: list[dict]) -> list[dict]:
 
 
 def raw_index(run: dict) -> dict[str, list[dict]]:
-    """每条键的原始写法与它的补全基准：目录行按页面地址，sitemap 按其自身地址。"""
+    """每条键的原始写法与它的补全基准：目录行按页面地址，sitemap 按其自身地址。
+
+    按该批入库时的档案选键函数，strict 站点的键保留路径大小写。
+    """
     out: dict[str, list[dict]] = {}
+    profiles = run.get("profiles") or {}
     for slot in run.get("keys") or []:
-        key = canonical_input(slot.get("key") or "")
+        key = key_for(slot.get("key") or "",
+                      profiles.get(slot.get("site") or "") or slot.get("profile"))
         if not key:
             continue
         raws: list[dict] = []

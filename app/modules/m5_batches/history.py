@@ -22,6 +22,8 @@ def summary(store) -> dict:
             "digest_short": run["input_digest"][:12],
             "findings_total": run["findings_total"],
             "sites": (run.get("sites") or "").split(",") if run.get("sites") else [],
+            "rule_version": run.get("rule_version", ""),
+            "profiles": run.get("profiles", {}),
         })
     return {"count": len(rows), "rows": rows, "stages": list(config.STAGES),
             "flow": config.STAGE_FLOW}
@@ -47,6 +49,8 @@ def detail(run: dict) -> dict:
         "stage_state": run.get("stage_state", {}),
         "stages": stage_rows(run),
         "params": run.get("params", {}),
+        "profiles": run.get("profiles", {}),
+        "profile_version": run.get("profile_version", 0),
         "resources": [{"url": r["url"], "status": r["status"], "bytes": r["bytes"],
                        "sha256": r["sha256"], "digest_short": r["sha256"][:12]}
                       for r in run.get("resources", [])],

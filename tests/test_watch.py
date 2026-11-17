@@ -231,3 +231,204 @@ def test_trend_counts_match_probe_states(run):
     assert row["total"] == PROBED
     assert sum(sum(cell.values()) for cell in row["sites"].values()) == PROBED
     assert sum(cell["dead"] for cell in row["sites"].values()) == DEAD
+
+
+# -- 跨版本比较：拆键 / 并键 / 待核实 ---------------------------------------
+
+def _versioned(key: str, legacy: str, status: int, site: str = "site-a",
+               profile: str = "strict", raws: list[dict] | None = None) -> dict:
+    row = _row(key, status, site=site, raws=raws)
+    row["legacy_key"] = legacy
+    row["profile"] = profile
+    return row
+
+
+def _snap_v2(rows: list[dict], profiles: dict[str, str],
+             run_id: str = "ra-v2") -> dict:
+    doc = _snap(rows, run_id=run_id)
+    doc["profiles"] = profiles
+    return doc
+
+
+def test_split_keys_are_not_added_or_recovered():
+    """旧口径合并的一条，新口径拆成多条：不得算成新增，也不得算成修复。"""
+    legacy_key = "http://h/site-a/notice/n-1"
+    prev = _snap_v2([_versioned(legacy_key, legacy_key, 404, profile="legacy")],
+                    {"site-a": "legacy"})
+    cur = _snap_v2([
+        _versioned("http://h/site-a/Notice/N-1", legacy_key, 404),
+        _versioned(legacy_key, legacy_key, 200),
+    ], {"site-a": "strict"})
+    result = diff.compare(prev, cur)
+    buckets = {row["key"]: row["bucket"] for row in result["rows"]}
+    assert buckets["http://h/site-a/Notice/N-1"] == "resplit"
+    assert buckets[legacy_key] == "recovered"
+    counts = result["summary"]["bucket_counts"]
+    assert counts["added"] == 0
+    assert counts["resplit"] == 1
+
+
+def test_ambiguous_split_is_unverified_not_recovered():
+    """一拆多且原始写法无法唯一对应：新出现的键列待核实，不计修复。"""
+    legacy_key = "http://h/site-a/notice/n-1"
+    prev = _snap_v2([_versioned(legacy_key, legacy_key, 404, profile="legacy")],
+                    {"site-a": "legacy"})
+    cur = _snap_v2([
+        _versioned("http://h/site-a/Notice/N-1", legacy_key, 404,
+                   raws=[{"raw": "notice/N-1", "base_kind": "page",
+                          "base": "http://h/site-a/catalog.html"}]),
+        _versioned("http://h/site-a/NOTICE/n-1", legacy_key, 200,
+                   raws=[{"raw": "NOTICE/n-1", "base_kind": "page",
+                          "base": "http://h/site-a/catalog.html"}]),
+    ], {"site-a": "strict"})
+    result = diff.compare(prev, cur)
+    buckets = {row["key"]: row["bucket"] for row in result["rows"]}
+    # 两条新键都无法被认定是原地址的延续：都列待核实，并各自给出可能的上次键
+    assert buckets == {
+        "http://h/site-a/Notice/N-1": "unverified",
+        "http://h/site-a/NOTICE/n-1": "unverified",
+    }
+    assert all(row["prev_key"] == legacy_key for row in result["rows"])
+    assert result["summary"]["bucket_counts"]["recovered"] == 0
+    assert result["summary"]["bucket_counts"]["unverified"] == 2
+
+
+def test_unmatched_row_under_rule_change_is_unverified_not_removed():
+    prev = _snap_v2([_versioned("http://h/site-a/x", "http://h/site-a/x", 404,
+                                profile="legacy")], {"site-a": "legacy"})
+    cur = _snap_v2([], {"site-a": "strict"})
+    result = diff.compare(prev, cur)
+    assert [row["bucket"] for row in result["rows"]] == ["unverified"]
+    assert result["summary"]["bucket_counts"]["removed"] == 0
+    assert result["summary"]["bucket_counts"]["unverified"] == 1
+
+
+def test_legacy_key_match_records_basis_of_correspondence():
+    """旧批用旧键、新批按新键：经旧键对应，行上给出对应依据与两侧键。"""
+    prev = _snap_v2([_versioned("http://h/site-a/notice/n-1",
+                                "http://h/site-a/notice/n-1", 500,
+                                profile="legacy")], {"site-a": "legacy"})
+    cur = _snap_v2([_versioned("http://h/site-a/Notice/N-1",
+                               "http://h/site-a/notice/n-1", 200)],
+                   {"site-a": "strict"})
+    result = diff.compare(prev, cur)
+    assert len(result["rows"]) == 1
+    row = result["rows"][0]
+    assert row["bucket"] == "recovered"
+    assert row["match"] == "legacy"
+    assert row["match_label"] == "旧键对应"
+    assert row["prev_key"] == "http://h/site-a/notice/n-1"
+    assert row["key"] == "http://h/site-a/Notice/N-1"
+    assert row["legacy_key"] == "http://h/site-a/notice/n-1"
+
+
+def test_duplicate_param_order_is_distinct_address_under_strict():
+    legacy = "http://h/site-a/x?a=1&a=2"
+    prev = _snap_v2([_versioned(legacy, legacy, 200, profile="legacy")],
+                    {"site-a": "legacy"})
+    cur = _snap_v2([
+        _versioned("http://h/site-a/x?a=1&a=2", legacy, 200,
+                   raws=[{"raw": "x?a=1&a=2", "base_kind": "page",
+                          "base": "http://h/site-a/catalog.html"}]),
+        _versioned("http://h/site-a/x?a=2&a=1", legacy, 200,
+                   raws=[{"raw": "x?a=2&a=1", "base_kind": "page",
+                          "base": "http://h/site-a/catalog.html"}]),
+    ], {"site-a": "strict"})
+    result = diff.compare(prev, cur)
+    counts = result["summary"]["bucket_counts"]
+    assert counts["added"] == 0
+    assert counts["resplit"] == 1
+    order_row = next(row for row in result["rows"]
+                     if row["key"].endswith("?a=2&a=1"))
+    assert order_row["bucket"] == "resplit"
+    assert order_row["legacy_key"] == legacy
+
+
+def test_profile_change_flag_reports_switched_sites():
+    prev = _snap_v2([], {"site-a": "legacy"})
+    cur = _snap_v2([], {"site-a": "strict"})
+    result = diff.compare(prev, cur)
+    assert result["profile_changes"] == {"site-a": True}
+    same = diff.compare(cur, cur)
+    assert same["profile_changes"] == {}
+
+
+def test_snapshot_keeps_real_key_and_legacy_key(settings, store):
+    from app.modules.m5_batches import service as batch_service
+    from app.modules.m2_url import rules
+    batch_service.run(settings, store, sites=["site-a"])
+    rules.switch(store, settings, sites=["site-a"], profile="strict")
+    run = batch_service.run(settings, store, sites=["site-a"])["run"]
+    doc = diff.snapshot(run)
+    assert doc["profiles"] == {"site-a": "strict"}
+    upper = next(row for row in doc["rows"]
+                 if row["key"] == "http://www.hz.gov.cn/site-a/Notice/N-2024-003")
+    assert upper["legacy_key"] == "http://www.hz.gov.cn/site-a/notice/n-2024-003"
+    assert upper["profile"] == "strict"
+
+
+def test_cross_version_watch_keeps_quarters_comparable(settings, store):
+    """真实批次：切规则后复算季度变化，拆键不冒充新增/修复，导出带对应依据。"""
+    from app.modules.m5_batches import service as batch_service
+    from app.modules.m2_url import rules
+    first = batch_service.run(settings, store, sites=["site-a"])["run"]
+    rules.switch(store, settings, sites=["site-a"], profile="strict")
+    second = batch_service.run(settings, store, sites=["site-a"])["run"]
+    result = watch_service.watch(settings, store, second, source="store")
+    counts = result["summary"]["bucket_counts"]
+    assert counts["added"] == 0
+    assert counts["removed"] == 0
+    assert counts["resplit"] >= 1
+    assert result["base"]["run_id"] == first["run_id"]
+    assert result["profile_changes"] == {"site-a": True}
+    row = next(row for row in result["rows"] if row["bucket"] == "resplit")
+    assert row["match"] == "resplit"
+    assert row["legacy_key"]
+    csv_text = watch_service.regressions_csv(result)
+    header = csv_text.lstrip("﻿").splitlines()[0].split(",")
+    assert "对应依据" in header
+    assert "旧键" in header
+
+
+def test_regressions_exclude_split_and_include_unverified():
+    from app import reasons
+    assert "resplit" not in reasons.ACTIONABLE_BUCKETS
+    assert "remerged" not in reasons.ACTIONABLE_BUCKETS
+    assert "unverified" in reasons.ACTIONABLE_BUCKETS
+    rows = [{"bucket": "resplit"}, {"bucket": "remerged"}, {"bucket": "unverified"},
+            {"bucket": "recovered"}, {"bucket": "new_dead"}]
+    picked = {row["bucket"] for row in diff.regressions(rows)}
+    assert picked == {"unverified", "new_dead"}
+
+
+def test_page_and_export_share_quarter_basis(settings, store):
+    """页面与回归清单 CSV 用同一个 service.watch 结果，条数与分桶一致。"""
+    from app.modules.m5_batches import service as batch_service
+    from app.modules.m2_url import rules
+    batch_service.run(settings, store, sites=["site-a"])
+    rules.switch(store, settings, sites=["site-a"], profile="strict")
+    second = batch_service.run(settings, store, sites=["site-a"])["run"]
+    result = watch_service.watch(settings, store, second, source="store")
+    csv_text = watch_service.regressions_csv(result)
+    body = [line for line in csv_text.lstrip("﻿").splitlines()[1:] if line]
+    assert len(body) == len(result["regressions"])
+    # 每个分桶合计与逐行桶一致
+    counts = result["summary"]["bucket_counts"]
+    assert counts["resplit"] == sum(1 for row in result["rows"]
+                                    if row["bucket"] == "resplit")
+    assert counts["unverified"] == sum(1 for row in result["rows"]
+                                       if row["bucket"] == "unverified")
+
+
+def test_json_regressions_match_page_rows_without_filters(settings, store):
+    from app.modules.m5_batches import service as batch_service
+    from app.modules.m2_url import rules
+    batch_service.run(settings, store, sites=["site-a"])
+    rules.switch(store, settings, sites=["site-a"], profile="strict")
+    second = batch_service.run(settings, store, sites=["site-a"])["run"]
+    full = watch_service.watch(settings, store, second, source="store",
+                               bucket="unverified")
+    filtered = watch_service.watch(settings, store, second, source="store")
+    assert full["shown"] == len(full["rows"])
+    assert all(row["bucket"] == "unverified" for row in full["rows"])
+    assert full["summary"]["total"] == filtered["summary"]["total"]

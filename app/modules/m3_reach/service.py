@@ -27,6 +27,8 @@ def probe_stage(settings, fetcher, prepared: dict) -> dict:
             failures += 1
         rows.append({
             "key": slot["key"], "site": slot["site"], "url": slot["url"],
+            "profile": slot.get("profile", ""),
+            "legacy_key": slot.get("legacy_key") or slot["key"],
             "in_catalog": obs.in_catalog, "in_sitemap": obs.in_sitemap,
             "status": result.status, "final_url": result.final_url,
             "hops": result.hops, "hop_count": result.hop_count,

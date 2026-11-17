@@ -20,7 +20,7 @@ BOM = "\ufeff"
 SOURCES = {"auto": "自动", "store": "库内上次", "sample": "样例快照"}
 BASE_LABELS = {"store": "库内上次", "sample": "样例快照", "none": "无基准"}
 CSV_COLUMNS = ("批次", "变化", "站点", "上次", "本次", "上次状态码", "本次状态码",
-               "地址", "说明")
+               "地址", "对应依据", "上次键", "旧键", "说明")
 
 
 def _read_json(path: str) -> dict | None:
@@ -36,7 +36,7 @@ def _read_json(path: str) -> dict | None:
 
 
 def load_sample(settings) -> dict | None:
-    """样例快照：结构对得上 schema 才用，坏文件当没有基准。"""
+    """样例快照：schema 对得上才用，坏文件当没有基准；旧快照缺 legacy_key 时按 key 兜底。"""
     doc = _read_json(settings.watch_baseline_path)
     if not doc or doc.get("schema") != diff.SNAPSHOT_SCHEMA:
         return None
@@ -104,10 +104,12 @@ def watch(settings, store, current: dict, source: str = "auto",
                  "source_label": BASE_LABELS.get(base["source"], base["source"]),
                  "run_id": (base["snapshot"] or {}).get("run_id", ""),
                  "started_at": (base["snapshot"] or {}).get("started_at", ""),
-                 "label": base["label"]},
+                 "label": base["label"],
+                 "profiles": (base["snapshot"] or {}).get("profiles", {})},
         "current": {"run_id": current.get("run_id", ""),
                     "started_at": current.get("started_at", ""),
-                    "rows": current_doc["row_count"]},
+                    "rows": current_doc["row_count"],
+                    "profiles": current_doc.get("profiles", {})},
         "source": source,
         "site": site or "",
         "bucket": bucket or "",
@@ -120,6 +122,8 @@ def watch(settings, store, current: dict, source: str = "auto",
         "regressions": [],
         "cycles": chain.group_cycles(current_doc["rows"]),
         "trend": diff.trend(_history(store)),
+        "profile_changes": {},
+        "match_labels": dict(diff.MATCH_LABELS),
     }
     if base["snapshot"] is None:
         return result
@@ -136,6 +140,8 @@ def watch(settings, store, current: dict, source: str = "auto",
         "regressions": diff.regressions(rows),
         "shown": len(rows),
         "rows": rows[:config.WATCH_PAGE_ROWS],
+        "profile_changes": compared.get("profile_changes", {}),
+        "match_labels": dict(diff.MATCH_LABELS),
     })
     return result
 
@@ -149,7 +155,10 @@ def regressions_csv(result: dict) -> str:
         writer.writerow([run_id, row["bucket_label"], row["site"],
                          row["prev_state_label"], row["cur_state_label"],
                          row.get("status_prev", "—"), row.get("status_cur", "—"),
-                         row["url"], row["note"]])
+                         row["url"], row.get("match_label", ""),
+                         row.get("prev_key") or row.get("legacy_key") or "",
+                         row.get("legacy_key") or "",
+                         row["note"]])
     return BOM + buffer.getvalue()
 
 

@@ -38,9 +38,17 @@ def digest_of(resources: Iterable[dict]) -> str:
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
-def batch_key(sites: Iterable[str], digest: str, rule_version: str) -> str:
-    """批次键 = 站点集合 + 输入摘要 + 规则版本；相同即同一批次，重跑直接复用。"""
-    stem = "|".join([",".join(sorted(sites)), digest, rule_version])
+def batch_key(sites: Iterable[str], digest: str, rule_version: str,
+              profiles: dict[str, str] | None = None) -> str:
+    """批次键 = 站点集合 + 输入摘要 + 规则版本 + 按站地址档案。
+
+    档案进键：同一份字节换了地址规则就是另一批，不会误命中旧结果；
+    站点集合 + 档案用有序拼接，保证同输入必然同号。
+    """
+    parts = [",".join(sorted(sites)), digest, rule_version]
+    if profiles:
+        parts.append(";".join(f"{site}={profiles[site]}" for site in sorted(profiles)))
+    stem = "|".join(parts)
     return hashlib.sha256(stem.encode("utf-8")).hexdigest()
 
 
@@ -73,6 +81,8 @@ def build_manifest(run: dict) -> dict:
         "run_id": run["run_id"],
         "batch_key": run["batch_key"],
         "rule_version": run["rule_version"],
+        "profiles": run.get("profiles", {}),
+        "profile_version": run.get("profile_version", 0),
         "status": run["status"],
         "sites": run["sites"],
         "input_digest": run["input_digest"],

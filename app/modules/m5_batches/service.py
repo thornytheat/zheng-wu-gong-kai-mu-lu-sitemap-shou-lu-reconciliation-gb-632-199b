@@ -10,6 +10,7 @@ import time
 from ... import config, errors, manifest
 from ..m1_catalog import fetch as fetch_mod
 from ..m1_catalog import service as crawl_service
+from ..m2_url import rules as rules_service
 from ..m2_url import service as url_service
 from ..m3_reach import service as reach_service
 from ..m4_reconcile import service as reconcile_service
@@ -25,9 +26,12 @@ def _payload(run: dict, reused: bool, note: str = "") -> dict:
 
 
 def run(settings, store, mode: str = "full", stop_after: str | None = None,
-        resume_of: str | None = None, sites: list[str] | None = None) -> dict:
+        resume_of: str | None = None, sites: list[str] | None = None,
+        profile: str | None = None) -> dict:
     if mode not in ("full", "resume"):
         raise errors.BadRequest("mode 只支持 full / resume", code="E_BAD_MODE")
+    if profile is not None and profile not in config.ADDRESS_PROFILES:
+        raise errors.BadRequest(f"未知规则档案 {profile}", code="E_BAD_PROFILE")
     stop = state.validate_stop(stop_after)
     if sites:
         unknown = [code for code in sites if code not in config.SITE_BY_CODE]
@@ -35,23 +39,33 @@ def run(settings, store, mode: str = "full", stop_after: str | None = None,
             raise errors.BadRequest(f"未知站点 {', '.join(unknown)}", code="E_BAD_SITE")
     if mode == "resume":
         return resume(settings, store, resume_of, stop)
-    return full(settings, store, stop, sites)
+    return full(settings, store, stop, sites, profile)
 
 
-def full(settings, store, stop: str | None, sites: list[str] | None) -> dict:
+def _profile_version(store, profiles: dict[str, str]) -> int:
+    versions = rules_service.versions_of(store, list(profiles))
+    return max(versions.values()) if versions else 0
+
+
+def full(settings, store, stop: str | None, sites: list[str] | None,
+         profile: str | None = None) -> dict:
     started_at = manifest.now_utc()
     clock = time.monotonic()
     fetcher = fetch_mod.make_fetcher(settings)
     crawl = crawl_service.crawl_stage(settings, fetcher, sites)
     digest = manifest.digest_of(crawl["resources"])
-    key = manifest.batch_key(crawl["sites"], digest, settings.rule_version)
+    profiles = rules_service.profiles_of(store, crawl["sites"])
+    if profile:
+        # 本次显式指定档案（试算用）：不落库，只影响本批
+        profiles = {code: profile for code in crawl["sites"]}
+    key = manifest.batch_key(crawl["sites"], digest, settings.rule_version, profiles)
     run_id = manifest.run_id_for(key)
 
     existing = store.find_by_batch_key(key)
     if existing is not None and existing.get("status") == "done" and stop is None:
         return _payload(existing, reused=True, note="REPLAY_REUSED")
 
-    prepared = url_service.prepare(crawl["catalog"], crawl["sitemap"])
+    prepared = url_service.prepare(crawl["catalog"], crawl["sitemap"], profiles)
     stages = [crawl["stage"]]
     probes: list[dict] = []
     reconciled: dict = {}
@@ -80,12 +94,14 @@ def full(settings, store, stop: str | None, sites: list[str] | None) -> dict:
         "sites": list(crawl["sites"]),
         "input_digest": digest,
         "rule_version": settings.rule_version,
+        "profiles": dict(profiles),
+        "profile_version": _profile_version(store, profiles),
         "started_at": started_at,
         "finished_at": manifest.now_utc(),
         "elapsed_ms": int((time.monotonic() - clock) * 1000),
         "params": {"mode": "full", "stop_after": stop or "all",
                    "sites": list(crawl["sites"]), "max_hops": settings.max_hops,
-                   "eval_date": settings.eval_date},
+                   "eval_date": settings.eval_date, "profiles": dict(profiles)},
         "stage_state": state.state(done, status),
         "stages": stages,
         "resources": crawl["resources"],
@@ -123,7 +139,10 @@ def resume(settings, store, resume_of: str | None, stop: str | None) -> dict:
     clock = time.monotonic()
     done = list(plan["done"])
     stages = [s for s in result["stages"] if s["stage"] in done]
-    prepared = url_service.prepare(result["catalog"], result["sitemap"])
+    # 续跑沿用该批入库时的档案：规则后来切了，也不能把老批次的尺子换掉
+    profiles = result.get("profiles") or rules_service.profiles_of(
+        store, result.get("sites"))
+    prepared = url_service.prepare(result["catalog"], result["sitemap"], profiles)
     probes = list(result.get("probes") or [])
     reconciled: dict = {}
     fetcher = fetch_mod.make_fetcher(settings)
@@ -134,7 +153,8 @@ def resume(settings, store, resume_of: str | None, stop: str | None) -> dict:
         stages.append(probed["stage"])
         done.append("probe")
         if stop == "probe":
-            result.update({"status": "partial", "stage_state": state.state(done, "partial")})
+            result.update({"status": "partial", "stage_state": state.state(done, "partial"),
+                           "profiles": dict(profiles)})
             result["probes"] = probes
             result["stages"] = stages
             result["elapsed_ms"] = int((time.monotonic() - clock) * 1000)
@@ -157,6 +177,8 @@ def resume(settings, store, resume_of: str | None, stop: str | None) -> dict:
         "elapsed_ms": int((time.monotonic() - clock) * 1000),
         "stage_state": state.state(done, status, resume_of=resume_of),
         "stages": stages,
+        "profiles": dict(profiles),
+        "profile_version": result.get("profile_version", 0),
         "keys": prepared["keys"],
         "entries": prepared["entries"],
         "probes": probes,

@@ -50,10 +50,10 @@ NORMALIZE_STEPS = (
     {"step": "scheme", "note": "只接受 http/https，其余进隔离区"},
     {"step": "host", "note": "主机小写，去掉末尾点与默认端口"},
     {"step": "relative", "note": "相对地址按所在页面地址补全"},
-    {"step": "path", "note": "合并重复斜杠，去掉尾斜杠（根路径除外），路径整体小写"},
+    {"step": "path", "note": "合并重复斜杠，去掉尾斜杠（根路径除外）；是否小写由站点档案决定"},
     {"step": "tracking", "note": "丢弃跟踪参数与空值会话参数"},
     {"step": "fragment", "note": "丢弃片段"},
-    {"step": "param_order", "note": "保留参数按名称+值排序后重建"},
+    {"step": "param_order", "note": "旧档案按名称+值排序；新档案保留原始顺序（含重复参数）"},
 )
 
 
@@ -74,11 +74,20 @@ def map_attrs(attrs: dict[str, str]) -> tuple[dict[str, str], str]:
 
 
 def contract_payload() -> dict:
+    profiles = []
+    for key, entry in config.ADDRESS_PROFILES.items():
+        profiles.append({"key": key, "label": entry["label"],
+                         "path_case_sensitive": entry["path_case_sensitive"],
+                         "sort_query": entry["sort_query"], "note": entry["note"]})
     return {
         "rule_version": config.RULE_VERSION,
         "fields": list(FIELD_CONTRACT),
         "normalize_steps": list(NORMALIZE_STEPS),
+        "profiles": profiles,
+        "default_profile": config.DEFAULT_PROFILE,
+        "site_defaults": dict(config.SITE_PROFILE_DEFAULTS),
         "current_attrs": CURRENT_ATTRS,
         "legacy_attrs": LEGACY_ATTRS,
         "categories": reasons.CATEGORIES,
+        "legacy_key": "sitemapaudit/watch 与历史批次用旧档案（小写 + 参数排序）算出的键",
     }

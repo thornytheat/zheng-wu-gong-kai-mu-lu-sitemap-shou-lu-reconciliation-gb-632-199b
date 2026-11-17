@@ -1,8 +1,17 @@
-"""地址规范化：7 步固定顺序，输出可比较的 key 与「改写过」标记。
+"""地址规范化：7 步固定顺序，按站点选用的规则档案输出比较键。
 
 顺序本身是规则的一部分（先补全相对地址才能取主机，先丢跟踪参数才能排序），
 所以 normalize() 里每一步都写成显式函数并按固定次序调用，不允许按 dict 遍历顺序拼。
 改写痕迹存进 notes，缺陷分类的 CANONICAL_MISMATCH 依据就是它非空。
+
+站点改版后，路径大小写与重复参数的先后顺序开始区分页面，于是同一套步骤有两种开关：
+
+- legacy（旧口径）：路径整体小写、参数按名称+值排序，同上季度；
+- strict（新口径）：路径保留原始大小写、参数保留原始顺序（含重复参数）。
+
+档案只改变「算不算同一个地址」，不改变跟踪参数丢弃、片段丢弃、尾斜杠这些基础步骤。
+无论用哪个档案，结果里都带 ``legacy_url``——按旧口径算出的旧键，历史批次复算和
+跨版本比较靠它对应，不需要把新键伪造成旧键。
 """
 from __future__ import annotations
 
@@ -16,6 +25,20 @@ _DUP_SLASH_RE = re.compile(r"/{2,}")
 
 
 @dataclass(frozen=True)
+class RuleSet:
+    path_case_sensitive: bool
+    sort_query: bool
+
+
+def rules_for(profile: str | None) -> RuleSet:
+    entry = config.ADDRESS_PROFILES.get(profile or config.DEFAULT_PROFILE)
+    if entry is None:
+        raise ValueError(f"未知地址规则档案 {profile}")
+    return RuleSet(path_case_sensitive=bool(entry["path_case_sensitive"]),
+                   sort_query=bool(entry["sort_query"]))
+
+
+@dataclass(frozen=True)
 class Normalized:
     raw: str
     url: str
@@ -24,10 +47,17 @@ class Normalized:
     path: str
     query: str
     notes: tuple[str, ...] = field(default_factory=tuple)
+    profile: str = config.DEFAULT_PROFILE
+    legacy_url: str = ""
 
     @property
     def key(self) -> str:
         return self.url
+
+    @property
+    def legacy_key(self) -> str:
+        """旧口径下的键；档案本身就是 legacy 时与 url 相同。"""
+        return self.legacy_url or self.url
 
     @property
     def changed(self) -> bool:
@@ -43,10 +73,10 @@ def _strip_scheme(text: str) -> str:
     return text
 
 
-def _clean_query(query: str) -> tuple[str, list[str]]:
+def _clean_query(query: str, rules: RuleSet) -> tuple[str, list[str], bool]:
     notes: list[str] = []
     if not query:
-        return "", notes
+        return "", notes, False
     pairs = parse_qsl(query, keep_blank_values=True)
     kept = []
     dropped_tracking = False
@@ -57,15 +87,17 @@ def _clean_query(query: str) -> tuple[str, list[str]]:
         kept.append((name, value))
     if dropped_tracking:
         notes.append("tracking")
-    if [p[0] for p in kept] != sorted(p[0] for p in kept):
-        notes.append("param_order")
-    kept.sort()
+    if rules.sort_query:
+        if [p[0] for p in kept] != sorted(p[0] for p in kept):
+            notes.append("param_order")
+        kept.sort()
     if len(kept) != len(pairs) and not dropped_tracking:
         notes.append("tracking")
-    return urlencode(kept), notes
+    return urlencode(kept), notes, dropped_tracking
 
 
-def normalize(raw: str, base_url: str | None = None) -> Normalized:
+def _build(raw: str, base_url: str | None, rules: RuleSet,
+           profile: str) -> Normalized:
     text = (raw or "").strip()
     if not text:
         raise ValueError("地址为空")
@@ -105,11 +137,12 @@ def normalize(raw: str, base_url: str | None = None) -> Normalized:
     if len(path) > 1 and path.endswith("/"):
         path = path.rstrip("/") or "/"
         notes.append("trailing_slash")
-    lowered_path = path.lower()
-    if lowered_path != path:
-        notes.append("case")
-    path = lowered_path
-    query, query_notes = _clean_query(parts.query)
+    if not rules.path_case_sensitive:
+        lowered_path = path.lower()
+        if lowered_path != path:
+            notes.append("case")
+        path = lowered_path
+    query, query_notes, _dropped = _clean_query(parts.query, rules)
     notes.extend(query_notes)
     if parts.fragment:
         notes.append("fragment")
@@ -119,11 +152,29 @@ def normalize(raw: str, base_url: str | None = None) -> Normalized:
         if note not in seen:
             seen.append(note)
     return Normalized(raw=raw, url=url, scheme=scheme, host=host, path=path,
-                      query=query, notes=tuple(seen))
+                      query=query, notes=tuple(seen), profile=profile,
+                      legacy_url="")
 
 
-def safe_normalize(raw: str, base_url: str | None = None) -> Normalized | None:
+def normalize(raw: str, base_url: str | None = None,
+              profile: str | None = None) -> Normalized:
+    """按站点档案规范化；结果始终附带旧口径键（legacy_url）。"""
+    chosen = profile or config.DEFAULT_PROFILE
+    rules = rules_for(chosen)
+    result = _build(raw, base_url, rules, chosen)
+    if chosen == config.PROFILE_LEGACY or rules == rules_for(config.PROFILE_LEGACY):
+        legacy = result.url
+    else:
+        legacy = _build(raw, base_url, rules_for(config.PROFILE_LEGACY),
+                        config.PROFILE_LEGACY).url
+    return Normalized(raw=result.raw, url=result.url, scheme=result.scheme,
+                      host=result.host, path=result.path, query=result.query,
+                      notes=result.notes, profile=chosen, legacy_url=legacy)
+
+
+def safe_normalize(raw: str, base_url: str | None = None,
+                   profile: str | None = None) -> Normalized | None:
     try:
-        return normalize(raw, base_url)
+        return normalize(raw, base_url, profile)
     except ValueError:
         return None

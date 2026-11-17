@@ -28,6 +28,23 @@ CREATE TABLE IF NOT EXISTS runs (
     payload       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_runs_started ON runs(started_at DESC);
+CREATE TABLE IF NOT EXISTS site_rules (
+    site       TEXT PRIMARY KEY,
+    profile    TEXT NOT NULL,
+    version    INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rule_switches (
+    switch_id    TEXT PRIMARY KEY,
+    request_key  TEXT NOT NULL,
+    sites        TEXT NOT NULL,
+    from_profiles TEXT NOT NULL,
+    to_profile   TEXT NOT NULL,
+    status       TEXT NOT NULL,
+    detail       TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_switches_created ON rule_switches(created_at DESC);
 """
 
 SUMMARY_FIELDS = ("run_id", "batch_key", "status", "input_digest", "rule_version",
@@ -88,6 +105,61 @@ class Store:
 
     def count_runs(self) -> int:
         return int(self._conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0])
+
+    # -- 站点地址规则 -------------------------------------------------------
+    def site_profiles(self) -> dict[str, dict]:
+        rows = self._conn.execute(
+            "SELECT site, profile, version, updated_at FROM site_rules").fetchall()
+        return {row["site"]: {"profile": row["profile"], "version": int(row["version"]),
+                              "updated_at": row["updated_at"]} for row in rows}
+
+    def set_site_profiles(self, profiles: dict[str, str], version: int,
+                          updated_at: str) -> None:
+        for site, profile in profiles.items():
+            self._conn.execute(
+                """INSERT INTO site_rules (site, profile, version, updated_at)
+                   VALUES (?,?,?,?)
+                   ON CONFLICT(site) DO UPDATE SET profile=excluded.profile,
+                     version=excluded.version, updated_at=excluded.updated_at""",
+                (site, profile, int(version), updated_at))
+        self._conn.commit()
+
+    def find_switch_by_request(self, request_key: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM rule_switches WHERE request_key = ? ORDER BY created_at LIMIT 1",
+            (request_key,)).fetchone()
+        return self._switch_row(row) if row else None
+
+    def save_switch(self, record: dict) -> dict:
+        self._conn.execute(
+            """INSERT INTO rule_switches (switch_id, request_key, sites, from_profiles,
+                                          to_profile, status, detail, created_at)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT(switch_id) DO UPDATE SET
+                 status=excluded.status, detail=excluded.detail,
+                 created_at=excluded.created_at""",
+            (record["switch_id"], record["request_key"], ",".join(record["sites"]),
+             json.dumps(record["from_profiles"], ensure_ascii=False, sort_keys=True),
+             record["to_profile"], record["status"],
+             json.dumps(record.get("detail") or {}, ensure_ascii=False, sort_keys=True),
+             record["created_at"]))
+        self._conn.commit()
+        return record
+
+    def list_switches(self, limit: int = 20) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM rule_switches ORDER BY created_at DESC LIMIT ?",
+            (int(limit),)).fetchall()
+        return [self._switch_row(row) for row in rows]
+
+    @staticmethod
+    def _switch_row(row) -> dict:
+        return {"switch_id": row["switch_id"], "request_key": row["request_key"],
+                "sites": [s for s in (row["sites"] or "").split(",") if s],
+                "from_profiles": json.loads(row["from_profiles"]),
+                "to_profile": row["to_profile"], "status": row["status"],
+                "detail": json.loads(row["detail"] or "{}"),
+                "created_at": row["created_at"]}
 
     def close(self) -> None:
         self._conn.close()

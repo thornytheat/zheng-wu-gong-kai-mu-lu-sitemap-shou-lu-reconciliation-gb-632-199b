@@ -20,6 +20,28 @@ UTC = dt.timezone.utc
 RULE_VERSION = "sitemapaudit/1.0.0"
 EVAL_DATE_DEFAULT = "2026-11-15"
 
+# 地址规则档案（profile）：同一套规范化步骤，按站点选用不同的「算不算同一个地址」开关。
+# 站点改版后，路径大小写与重复参数顺序开始区分页面；历史季度仍按原档案复算。
+PROFILE_LEGACY = "legacy"
+PROFILE_STRICT = "strict"
+DEFAULT_PROFILE = PROFILE_LEGACY
+ADDRESS_PROFILES: dict[str, dict] = {
+    PROFILE_LEGACY: {
+        "label": "旧规则（路径不分大小写 / 参数排序）",
+        "path_case_sensitive": False,
+        "sort_query": True,
+        "note": "改版前口径：路径统一小写，参数按名称+值排序",
+    },
+    PROFILE_STRICT: {
+        "label": "新规则（路径区分大小写 / 重复参数顺序有效）",
+        "path_case_sensitive": True,
+        "sort_query": False,
+        "note": "改版后口径：路径保留原始大小写，参数保留原始顺序（含重复参数）",
+    },
+}
+PROFILE_CODES = tuple(ADDRESS_PROFILES)
+RULE_SWITCH_VALIDATE_RUNS = 5   # 规则切换前最多回放几批历史数据做校验
+
 STAGES = ("crawl", "probe", "reconcile")
 STAGE_LABELS = {"crawl": "采信", "probe": "探测", "reconcile": "对账"}
 STAGE_FLOW = "采信 → 探测 → 对账"
@@ -64,6 +86,7 @@ class Site:
     name: str
     host: str
     path: str
+    profile: str = DEFAULT_PROFILE
 
     @property
     def sitemap_path(self) -> str:
@@ -82,6 +105,7 @@ SITES = (
 SITE_CODES = tuple(s.code for s in SITES)
 SITE_BY_CODE = {s.code: s for s in SITES}
 SITE_BY_HOST = {s.host: s for s in SITES}
+SITE_PROFILE_DEFAULTS = {s.code: s.profile for s in SITES}
 
 
 @dataclass(frozen=True)

@@ -21,7 +21,7 @@ from .store import Store
 MODULES = (m1_handler, m2_handler, m3_handler, m4_handler, m5_handler, m6_handler,
            m7_handler)
 PAGE_PATHS = ("/", "/sites", "/reach", "/reconcile", "/batches", "/defects", "/watch",
-              "/healthz")
+              "/rules", "/healthz")
 
 
 def create_app(settings: config.Settings | None = None) -> FastAPI:

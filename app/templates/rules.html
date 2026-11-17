@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}地址规则 · 目录对账{% endblock %}
+{% block body %}
+<div class="pagehead">
+  <h1>地址规则</h1>
+  <span class="amount">{{ data.sites | length }} 站 · 规则版本 {{ data.rule_version }}</span>
+</div>
+
+<section class="panel">
+  <header><h2>站点规则</h2><span>切换后只影响该站下一次巡检；历史批次按入库时的档案复算</span></header>
+  <div class="body scroll">
+    <table class="grid">
+      <thead><tr><th>站点</th><th>主机</th><th>当前档案</th><th class="num">版本</th><th>切换</th></tr></thead>
+      <tbody>
+      {% for row in data.sites %}
+        <tr>
+          <td>{{ row.code }} · {{ row.name }}</td>
+          <td class="addr">{{ row.host }}</td>
+          <td>
+            <span class="tag {{ 'warn' if row.profile != 'legacy' else '' }}">{{ row.profile_label }}</span>
+          </td>
+          <td class="num">{{ row.version }}</td>
+          <td>
+            <form method="post" class="inline-form" data-switch>
+              <input type="hidden" name="sites" value="{{ row.code }}">
+              <input type="hidden" name="expected_versions" value="{{ row.version }}">
+              <select name="profile">
+                {% for key, item in profiles.items() %}
+                <option value="{{ key }}" {{ 'selected' if key == row.profile else '' }}>{{ item.label }}</option>
+                {% endfor %}
+              </select>
+              <button type="submit">切换</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel">
+  <header><h2>规则档案</h2><span>同一套步骤，两个开关</span></header>
+  <div class="body scroll">
+    <table class="grid">
+      <thead><tr><th>档案</th><th>路径大小写</th><th>重复参数顺序</th><th>说明</th></tr></thead>
+      <tbody>
+      {% for item in data.profiles %}
+        <tr>
+          <td>{{ item.label }}</td>
+          <td>{{ "区分" if item.path_case_sensitive else "不区分" }}</td>
+          <td>{{ "有效" if not item.sort_query else "排序后视为同一地址" }}</td>
+          <td class="wrap">{{ item.note }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <p class="empty">切换先回放最近几批原始行校验；校验不过保持旧规则并记失败，重试同一请求不会重复生效。</p>
+  </div>
+</section>
+
+<section class="panel">
+  <header><h2>切换记录</h2><span>{{ data.switches | length }} 条</span></header>
+  <div class="body scroll">
+    {% if data.switches %}
+    <table class="grid">
+      <thead><tr><th>时间</th><th>站点</th><th>从</th><th>到</th><th>结果</th><th>校验</th></tr></thead>
+      <tbody>
+      {% for row in data.switches %}
+        <tr>
+          <td>{{ row.created_at | localts }}</td>
+          <td>{{ row.sites | join("、") }}</td>
+          <td>{{ row.from_profiles.values() | join("、") }}</td>
+          <td>{{ row.to_profile }}</td>
+          <td><span class="tag {{ 'ok' if row.status == 'applied' else 'bad' }}">
+            {{ "已生效" if row.status == "applied" else "失败（保持旧规则）" }}</span></td>
+          <td class="wrap">{{ row.detail.message if row.detail.message is defined else (row.detail.validated.runs if row.detail.validated is defined else "—") }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">还没有切换记录。</p>
+    {% endif %}
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script src="/static/rules.js" defer></script>{% endblock %}

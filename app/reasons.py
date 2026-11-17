@@ -90,9 +90,16 @@ CHANGE_BUCKETS: dict[str, dict[str, str]] = {
     "added": {"level": "info", "label": "新增地址", "note": "本次新出现的地址"},
     "removed": {"level": "info", "label": "消失地址", "note": "上次有、本次没有"},
     "basis": {"level": "warn", "label": "基准不同", "note": "同一写法按不同基准补全，需人工确认"},
+    "resplit": {"level": "info", "label": "规则拆键", "note": "旧规则合并的地址在新规则下拆成多条，逐条对比，不计新增/修复"},
+    "remerged": {"level": "info", "label": "规则并键", "note": "旧规则下多条地址在新规则下并成一条，不计消失/修复"},
+    "unverified": {"level": "warn", "label": "待核实", "note": "跨规则无法唯一对应，需人工确认，不计修复/新增"},
 }
 CHANGE_ORDER = tuple(CHANGE_BUCKETS)
-ACTIONABLE_BUCKETS = ("new_dead", "new_redirect", "still_dead", "improved", "basis")
+# 回归清单：需要人看的变化。resplit/remerged 只作规则差异说明，不进回归；
+# unverified 进清单但只标「待核实」，绝不计入「已修复」。
+ACTIONABLE_BUCKETS = ("new_dead", "new_redirect", "still_dead", "improved", "basis",
+                      "unverified")
+INFORMATIONAL_BUCKETS = ("resplit", "remerged")
 # 分桶优先级给页面排序用：越靠前越要先看
 CHANGE_RANK = {bucket: index for index, bucket in enumerate(CHANGE_ORDER)}
 
@@ -145,6 +152,6 @@ def group_of(code: str) -> str:
         return "规范化"
     if code.startswith("PROBE_"):
         return "探测"
-    if code.startswith(("CHAIN_", "BASIS_", "WATCH_")):
+    if code.startswith(("CHAIN_", "BASIS_", "WATCH_")) or code in CHANGE_BUCKETS:
         return "变更"
     return "批次"

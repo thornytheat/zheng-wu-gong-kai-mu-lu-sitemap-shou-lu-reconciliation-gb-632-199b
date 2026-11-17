@@ -54,7 +54,20 @@
   <div><dt>已修复</dt><dd>{{ data.summary.bucket_counts.recovered | num }}<small>条</small></dd></div>
   <div><dt>新增跳转</dt><dd>{{ data.summary.bucket_counts.new_redirect | num }}<small>条</small></dd></div>
   <div><dt>基准不同</dt><dd>{{ data.summary.bucket_counts.basis | num }}<small>条</small></dd></div>
+  <div><dt>待核实</dt><dd>{{ data.summary.bucket_counts.unverified | num }}<small>条</small></dd></div>
 </section>
+
+{% if data.base.profiles or data.current.profiles %}
+<section class="panel"><div class="body">
+  <p class="empty">
+    规则口径：基准
+    {% for site, profile in data.base.profiles.items() %}{{ site }}={{ profile }}{% if not loop.last %}、{% endif %}{% endfor %}
+    → 本次
+    {% for site, profile in data.current.profiles.items() %}{{ site }}={{ profile }}{% if not loop.last %}、{% endif %}{% endfor %}
+    {% if data.profile_changes %}；切换站点：{{ data.profile_changes.keys() | join("、") }}。拆分/合并的地址单列，不能唯一对应的列为待核实。{% endif %}
+  </p>
+</div></section>
+{% endif %}
 
 <div class="panel-2">
   <section class="panel">
@@ -116,7 +129,7 @@
     {% if data.rows %}
     <table class="grid" id="change-table">
       <thead>
-        <tr><th>变化</th><th>站点</th><th>上次</th><th>本次</th><th class="num">状态码</th><th>地址</th></tr>
+        <tr><th>变化</th><th>站点</th><th>上次</th><th>本次</th><th class="num">状态码</th><th>对应依据</th><th>地址</th></tr>
       </thead>
       <tbody>
       {% for row in data.rows %}
@@ -126,7 +139,10 @@
           <td>{{ row.prev_state_label }}</td>
           <td>{{ row.cur_state_label }}</td>
           <td class="num">{{ row.status_prev }} → {{ row.status_cur }}</td>
-          <td class="addr" title="{{ row.url }}">{{ row.url }}</td>
+          <td><span class="tag info" title="{{ row.note }}">{{ row.match_label }}</span></td>
+          <td class="addr" title="{{ row.url }}">{{ row.url }}
+            {% if row.legacy_key and row.legacy_key != row.key %}<span class="samples">旧键 {{ row.legacy_key }}</span>{% endif %}
+          </td>
         </tr>
       {% endfor %}
       </tbody>
